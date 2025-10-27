@@ -1,20 +1,30 @@
 // backend/server.js
 const WebSocket = require('ws');
-const pty = require('node-pty'); // ← ADD THIS
+const pty = require('node-pty');
 const path = require('path');
 const fs = require('fs');
 
-const wss = new WebSocket.Server({ port: 8080 });
+const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
-console.log('Minishell WebSocket server running on port 8080');
+console.log('Minishell WebSocket server running on port', process.env.PORT || 8080);
 
 wss.on('connection', (ws) => {
   let shell;
   let currentDirectory = __dirname;
 
   try {
-    // Use node-pty instead of child_process.spawn for proper TTY
-    shell = pty.spawn('./minishell', [], {
+    // Check if minishell binary exists, fall back to system shell
+    let shellPath = './minishell';
+    let shellArgs = [];
+    
+    if (!fs.existsSync(shellPath)) {
+      console.log('Minishell not found, using system shell');
+      shellPath = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
+      shellArgs = ['--login'];
+    }
+
+    // Use node-pty for proper TTY
+    shell = pty.spawn(shellPath, shellArgs, {
       name: 'xterm-color',
       cols: 80,
       rows: 24,
@@ -24,21 +34,26 @@ wss.on('connection', (ws) => {
 
     // Send shell output to client
     shell.onData((data) => {
-      ws.send(JSON.stringify({ 
-        type: 'output', 
-        data: data
-      }));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ 
+          type: 'output', 
+          data: data
+        }));
+      }
     });
 
     // Handle shell exit
     shell.onExit(({ exitCode, signal }) => {
-      ws.send(JSON.stringify({
-        type: 'exit',
-        data: `Shell exited with code ${exitCode}`
-      }));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'exit',
+          data: `Shell exited with code ${exitCode}`
+        }));
+        ws.close();
+      }
     });
 
-    // Handle commands and signals from client
+    // Handle commands from client
     ws.on('message', (message) => {
       try {
         const parsed = JSON.parse(message);
@@ -48,7 +63,6 @@ wss.on('connection', (ws) => {
         } else if (parsed.type === 'resize') {
           shell.resize(parsed.cols, parsed.rows);
         } else if (parsed.type === 'signal') {
-          // Handle signals (Ctrl+C, Ctrl+D, etc.)
           switch(parsed.signal) {
             case 'SIGINT':
               shell.kill('SIGINT');
@@ -63,14 +77,14 @@ wss.on('connection', (ws) => {
               shell.write('\x04');
               break;
           }
-        } else {
-          shell.write(parsed.command + '\n');
         }
       } catch (error) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          data: 'Invalid message format'
-        }));
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            data: 'Invalid message format'
+          }));
+        }
       }
     });
 
@@ -82,16 +96,25 @@ wss.on('connection', (ws) => {
     });
 
     // Send welcome message
-    ws.send(JSON.stringify({
-      type: 'output',
-      data: 'Minishell connected successfully!\r\n'
-    }));
+    if (ws.readyState === WebSocket.OPEN) {
+      const welcomeMsg = shellPath === './minishell' 
+        ? 'Minishell connected successfully!\r\n'
+        : 'System shell connected (minishell not found)\r\n';
+      
+      ws.send(JSON.stringify({
+        type: 'output',
+        data: welcomeMsg
+      }));
+    }
 
   } catch (error) {
-    ws.send(JSON.stringify({
-      type: 'error',
-      data: `Server error: ${error.message}`
-    }));
-    ws.close();
+    console.error('Shell spawn error:', error);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        data: `Server error: ${error.message}`
+      }));
+      ws.close();
+    }
   }
 });
