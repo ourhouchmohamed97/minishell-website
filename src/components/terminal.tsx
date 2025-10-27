@@ -9,7 +9,6 @@ import 'xterm/css/xterm.css';
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY = 2000;
 const TERMINAL_INIT_DELAY = 100;
-const RESIZE_DEBOUNCE_DELAY = 300;
 
 export default function Terminal() {
   const [isConnected, setIsConnected] = useState(false);
@@ -17,43 +16,24 @@ export default function Terminal() {
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [isTerminalReady, setIsTerminalReady] = useState(false);
-  
+
   const wsRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const resizeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Extract terminal configuration
+  // Terminal config
   const TERMINAL_CONFIG = {
     cursorBlink: true,
     theme: {
       background: '#0f172a',
       foreground: '#e2e8f0',
       cursor: '#e2e8f0',
-      cursorAccent: '#0f172a',
-      selectionBackground: '#1e293b',
-      black: '#000000',
-      red: '#ef4444',
-      green: '#10b981',
-      yellow: '#f59e0b',
-      blue: '#3b82f6',
-      magenta: '#ec4899',
-      cyan: '#06b6d4',
-      white: '#e2e8f0',
-      brightBlack: '#475569',
-      brightRed: '#f87171',
-      brightGreen: '#34d399',
-      brightYellow: '#fbbf24',
-      brightBlue: '#60a5fa',
-      brightMagenta: '#f472b6',
-      brightCyan: '#22d3ee',
-      brightWhite: '#f1f5f9'
+      selectionBackground: '#1e293b'
     },
     fontSize: 15,
     fontFamily: '"Fira Code", "Cascadia Code", monospace',
-    fontWeight: '400' as const,
     lineHeight: 1.2,
     scrollback: 10000,
     allowTransparency: false,
@@ -61,85 +41,56 @@ export default function Terminal() {
 
   // Initialize terminal
   useEffect(() => {
-    if (typeof window === 'undefined' || !terminalRef.current || xtermRef.current) return;
+    if (!terminalRef.current || xtermRef.current) return;
 
     const timeout = setTimeout(() => {
-      try {
-        const terminal = new XTerm(TERMINAL_CONFIG);
-        const fitAddon = new FitAddon();
-        terminal.loadAddon(fitAddon);
-        
-        if (terminalRef.current) {
-          terminal.open(terminalRef.current);
-          
-          setTimeout(() => {
-            try {
-              fitAddon.fit();
-              setIsTerminalReady(true);
-            } catch (error) {
-              console.error('Error fitting terminal:', error);
-              setTimeout(() => {
-                try {
-                  fitAddon.fit();
-                  setIsTerminalReady(true);
-                } catch (retryError) {
-                  console.error('Retry fitting failed:', retryError);
-                  setIsTerminalReady(true);
-                }
-              }, 100);
-            }
-          }, 150);
+      const terminal = new XTerm(TERMINAL_CONFIG);
+      const fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(terminalRef.current);
+      fitAddon.fit();
+
+      xtermRef.current = terminal;
+      fitAddonRef.current = fitAddon;
+      setIsTerminalReady(true);
+
+      // Handle input
+      terminal.onData((data) => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'input', data }));
         }
+      });
 
-        xtermRef.current = terminal;
-        fitAddonRef.current = fitAddon;
+      // Custom key events (Ctrl+C, Ctrl+D, etc.)
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (event.type !== 'keydown' || !event.ctrlKey) return true;
+        if (wsRef.current?.readyState !== WebSocket.OPEN) return true;
 
-        // Handle terminal input
-        terminal.onData((data) => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: 'input', data }));
-          }
-        });
+        switch (event.code) {
+          case 'KeyC':
+            wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
+            return false;
+          case 'KeyD':
+            wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'EOF' }));
+            return false;
+          case 'KeyL':
+            terminal.clear();
+            return false;
+          default:
+            return true;
+        }
+      });
 
-        // Handle special keys
-        terminal.attachCustomKeyEventHandler((event) => {
-          if (event.type !== 'keydown' || !event.ctrlKey) return true;
-          if (wsRef.current?.readyState !== WebSocket.OPEN) return true;
-
-          switch (event.code) {
-            case 'KeyC':
-              wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
-              return false;
-            case 'KeyD':
-              wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'EOF' }));
-              return false;
-            case 'KeyL':
-              terminal.clear();
-              return false;
-            default:
-              return true;
-          }
-        });
-
-      } catch (error) {
-        console.error('Error initializing terminal:', error);
-      }
     }, TERMINAL_INIT_DELAY);
 
     return () => {
       clearTimeout(timeout);
-      if (xtermRef.current) {
-        try {
-          xtermRef.current.dispose();
-        } catch (error) {
-          console.error('Error disposing terminal:', error);
-        }
-        xtermRef.current = null;
-      }
+      if (xtermRef.current) xtermRef.current.dispose();
+      xtermRef.current = null;
     };
   }, []);
 
-  // Parse WebSocket message
+  // Handle WebSocket messages
   const handleWebSocketMessage = useCallback((data: any, terminal: XTerm) => {
     switch (data.type) {
       case 'output':
@@ -154,13 +105,12 @@ export default function Terminal() {
     }
   }, []);
 
-  // Handle WebSocket connection
+  // Connect WebSocket
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN || !isTerminalReady) return;
 
-    const websocket = new WebSocket('ws://localhost:8080');
-    const terminal = xtermRef.current;
-    
+    const websocket = new WebSocket('wss://minishell-website.onrender.com'); // ← Update this URL
+
     websocket.onopen = () => {
       setIsConnected(true);
       setConnectionError('');
@@ -169,18 +119,19 @@ export default function Terminal() {
     };
 
     websocket.onmessage = (event) => {
+      const terminal = xtermRef.current;
       if (!terminal) return;
       try {
         handleWebSocketMessage(JSON.parse(event.data), terminal);
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
+      } catch (err) {
+        console.error('Error parsing WS message:', err);
       }
     };
 
     websocket.onclose = (event) => {
       setIsConnected(false);
       wsRef.current = null;
-      
+
       if (!event.wasClean && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         setIsReconnecting(true);
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -200,108 +151,57 @@ export default function Terminal() {
     wsRef.current = websocket;
   }, [reconnectAttempts, isTerminalReady, handleWebSocketMessage]);
 
-  // Connect/disconnect WebSocket
   useEffect(() => {
-    if (isTerminalReady) {
-      connectWebSocket();
-    }
-    
+    if (isTerminalReady) connectWebSocket();
+
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [connectWebSocket, isTerminalReady]);
+  }, [isTerminalReady, connectWebSocket]);
 
-  // Handle window resize
+  // Resize terminal on window resize
   useEffect(() => {
-    if (!isTerminalReady) return;
-
     const handleResize = () => {
-      if (resizeTimeoutRef.current) clearTimeout(resizeTimeoutRef.current);
-
-      resizeTimeoutRef.current = setTimeout(() => {
-        const { fitAddon: addon, terminal, ws } = {
-          fitAddon: fitAddonRef.current,
-          terminal: xtermRef.current,
-          ws: wsRef.current
-        };
-
-        if (addon && terminal && terminalRef.current) {
-          try {
-            addon.fit();
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
-            }
-          } catch (error) {
-            console.error('Error during resize:', error);
-          }
-        }
-      }, 50);
+      const terminal = xtermRef.current;
+      const fitAddon = fitAddonRef.current;
+      if (terminal && fitAddon && wsRef.current?.readyState === WebSocket.OPEN) {
+        fitAddon.fit();
+        wsRef.current.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+      }
     };
-
     window.addEventListener('resize', handleResize);
-    
-    // Initial fit
-    setTimeout(handleResize, RESIZE_DEBOUNCE_DELAY);
-    
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      if (resizeTimeoutRef.current) clearTimeout(resizeTimeoutRef.current);
-    };
-  }, [isTerminalReady]);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
+  // Retry connection
   const handleRetryConnection = () => {
     setConnectionError('');
     setReconnectAttempts(0);
     setIsReconnecting(false);
-    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
     connectWebSocket();
   };
 
   return (
     <div className="w-full max-w-5xl mx-auto p-4">
       <div className="bg-slate-900 rounded-lg shadow-xl overflow-hidden border border-slate-700">
-        
         {/* Header */}
-        <div className="bg-gradient-to-r from-[#0f0f70] via-[#131380] to-[#0f0f70] px-6 py-4 border-b border-blue-500/50">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              {/* Connection Indicator */}
-              <div className="relative">
-                <div className={`w-3 h-3 rounded-full shadow-lg transition-colors duration-300 ${
-                  isConnected ? 'bg-green-400' : isReconnecting ? 'bg-yellow-400' : 'bg-red-400'
-                }`}>
-                  {isConnected && <div className="absolute inset-0 bg-green-400 rounded-full animate-ping opacity-75"></div>}
-                  {isReconnecting && <div className="absolute inset-0 bg-yellow-400 rounded-full animate-pulse"></div>}
-                </div>
-              </div>
-              
-              {/* Terminal Info */}
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-cyan-300 rounded-full"></div>
-                <span className="text-white font-mono text-sm font-bold">minishell</span>
-                <span className="text-blue-200 text-sm">•</span>
-                <span className="text-green-300 text-sm font-mono">v1.0</span>
-              </div>
-            </div>
-
-            {/* Window Controls */}
-            <div className="flex space-x-2">
-              <div className="w-3 h-3 bg-yellow-400 rounded-full hover:bg-yellow-300 cursor-pointer transition-colors"></div>
-              <div className="w-3 h-3 bg-red-400 rounded-full hover:bg-red-300 cursor-pointer transition-colors"></div>
-            </div>
+        <div className="bg-gradient-to-r from-[#0f0f70] via-[#131380] to-[#0f0f70] px-6 py-4 border-b border-blue-500/50 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className={`w-3 h-3 rounded-full shadow-lg ${
+              isConnected ? 'bg-green-400' : isReconnecting ? 'bg-yellow-400' : 'bg-red-400'
+            }`}></div>
+            <span className="text-white font-mono text-sm font-bold">minishell</span>
           </div>
         </div>
 
         {/* Terminal Area */}
-        <div className="w-full h-96 bg-[#0f172a] p-4 relative" ref={terminalRef} />
+        <div className="w-full h-96 bg-[#0f172a] p-4" ref={terminalRef} />
 
         {/* Status Bar */}
-        <div className="bg-[#0f0f70]/80 border-t border-blue-500/50 px-6 py-3">
-          <div className="flex items-center justify-between text-xs text-blue-200 font-mono">
-            <span>👨🏻‍💻 minishell-web</span>
-            <span>{isConnected ? 'Ready for commands' : isReconnecting ? `Reconnecting (${reconnectAttempts})` : 'Disconnected'}</span>
-          </div>
+        <div className="bg-[#0f0f70]/80 border-t border-blue-500/50 px-6 py-2 text-xs text-blue-200 font-mono flex justify-between">
+          <span>👨🏻‍💻 minishell-web</span>
+          <span>{isConnected ? 'Ready for commands' : isReconnecting ? `Reconnecting (${reconnectAttempts})` : 'Disconnected'}</span>
         </div>
 
         {/* Error Overlay */}
@@ -313,7 +213,6 @@ export default function Terminal() {
               </div>
               <h3 className="text-xl font-bold text-white mb-2">Connection Lost</h3>
               <p className="text-blue-200 mb-2">{connectionError}</p>
-              <p className="text-blue-300 text-sm mb-6">Maximum reconnection attempts reached</p>
               <button 
                 onClick={handleRetryConnection}
                 className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 rounded-lg text-white font-semibold shadow-lg transition-all duration-200 transform hover:scale-105 active:scale-95"
