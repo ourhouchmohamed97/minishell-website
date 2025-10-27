@@ -1,0 +1,16 @@
+{
+  "name": "minishell-backend",
+  "version": "1.0.0",
+  "description": "WebSocket server for minishell",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.14.2",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  }
+}
