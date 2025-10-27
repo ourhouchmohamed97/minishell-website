@@ -1,6 +1,3 @@
-// app/resources/page.tsx
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/footer';
 import Image from 'next/image';
 import Link from 'next/link';
 

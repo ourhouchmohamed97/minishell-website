@@ -42,29 +42,29 @@ export default function Terminal() {
   // Initialize terminal
   useEffect(() => {
     if (!terminalRef.current || xtermRef.current) return;
-
+  
     const timeout = setTimeout(() => {
       const terminal = new XTerm(TERMINAL_CONFIG);
       const fitAddon = new FitAddon();
       terminal.loadAddon(fitAddon);
       fitAddon.fit();
-
+  
       xtermRef.current = terminal;
       fitAddonRef.current = fitAddon;
       setIsTerminalReady(true);
-
+  
       // Handle input
-      terminal.onData((data) => {
+      terminal.onData((data: string) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'input', data }));
         }
       });
-
+  
       // Custom key events (Ctrl+C, Ctrl+D, etc.)
-      terminal.attachCustomKeyEventHandler((event) => {
+      terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
         if (event.type !== 'keydown' || !event.ctrlKey) return true;
         if (wsRef.current?.readyState !== WebSocket.OPEN) return true;
-
+  
         switch (event.code) {
           case 'KeyC':
             wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
@@ -79,15 +79,15 @@ export default function Terminal() {
             return true;
         }
       });
-
+  
     }, TERMINAL_INIT_DELAY);
-
+  
     return () => {
       clearTimeout(timeout);
       if (xtermRef.current) xtermRef.current.dispose();
       xtermRef.current = null;
     };
-  }, []);
+  }, [TERMINAL_CONFIG]);  
 
   // Handle WebSocket messages
   const handleWebSocketMessage = useCallback((data: any, terminal: XTerm) => {
