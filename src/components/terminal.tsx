@@ -47,7 +47,6 @@ export default function Terminal() {
       const terminal = new XTerm(TERMINAL_CONFIG);
       const fitAddon = new FitAddon();
       terminal.loadAddon(fitAddon);
-      terminal.open(terminalRef.current);
       fitAddon.fit();
 
       xtermRef.current = terminal;
