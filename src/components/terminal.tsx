@@ -10,6 +10,24 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY = 2000;
 const TERMINAL_INIT_DELAY = 100;
 
+// Discriminated union for server -> client messages
+type ServerMsg =
+  | { type: 'output'; data: string }
+  | { type: 'error'; data: string }
+  | { type: 'exit'; data: string };
+// The discriminant type field enables safe narrowing in switch statements and prevents any usage [web:2][web:23].
+
+// Runtime validator for parsed JSON
+function isServerMsg(value: unknown): value is ServerMsg {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const t = v.type;
+  const d = v.data;
+  if (t !== 'output' && t !== 'error' && t !== 'exit') return false;
+  return typeof d === 'string';
+} 
+// Parsing JSON returns unknown; validate with a type guard before using the data [web:12][web:6].
+
 export default function Terminal() {
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string>('');
@@ -23,48 +41,67 @@ export default function Terminal() {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Terminal config
-  const TERMINAL_CONFIG = {
-    cursorBlink: true,
-    theme: {
-      background: '#0f172a',
-      foreground: '#e2e8f0',
-      cursor: '#e2e8f0',
-      selectionBackground: '#1e293b'
-    },
-    fontSize: 15,
-    fontFamily: '"Fira Code", "Cascadia Code", monospace',
-    lineHeight: 1.2,
-    scrollback: 10000,
-    allowTransparency: false,
-  };
-
   // Initialize terminal
   useEffect(() => {
     if (!terminalRef.current || xtermRef.current) return;
-  
+
+    const TERMINAL_CONFIG = {
+      cursorBlink: true,
+      theme: {
+        background: '#0f172a',
+        foreground: '#e2e8f0',
+        cursor: '#e2e8f0',
+        cursorAccent: '#0f172a',
+        selectionBackground: '#1e293b',
+        black: '#000000',
+        red: '#ef4444',
+        green: '#10b981',
+        yellow: '#f59e0b',
+        blue: '#3b82f6',
+        magenta: '#ec4899',
+        cyan: '#06b6d4',
+        white: '#e2e8f0',
+        brightBlack: '#475569',
+        brightRed: '#f87171',
+        brightGreen: '#34d399',
+        brightYellow: '#fbbf24',
+        brightBlue: '#60a5fa',
+        brightMagenta: '#f472b6',
+        brightCyan: '#22d3ee',
+        brightWhite: '#f1f5f9'
+      },
+      fontSize: 15,
+      fontFamily: '"Fira Code", "Cascadia Code", monospace',
+      fontWeight: '400' as const,
+      lineHeight: 1.2,
+      scrollback: 10000,
+      allowTransparency: false,
+    };
+
     const timeout = setTimeout(() => {
       const terminal = new XTerm(TERMINAL_CONFIG);
       const fitAddon = new FitAddon();
       terminal.loadAddon(fitAddon);
       fitAddon.fit();
-  
+
+      // Attach to DOM after creating to ensure measurements
+      terminal.open(terminalRef.current!);
       xtermRef.current = terminal;
       fitAddonRef.current = fitAddon;
       setIsTerminalReady(true);
-  
+
       // Handle input
       terminal.onData((data: string) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'input', data }));
         }
       });
-  
-      // Custom key events (Ctrl+C, Ctrl+D, etc.)
+
+      // Custom key events
       terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
         if (event.type !== 'keydown' || !event.ctrlKey) return true;
         if (wsRef.current?.readyState !== WebSocket.OPEN) return true;
-  
+
         switch (event.code) {
           case 'KeyC':
             wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
@@ -79,36 +116,37 @@ export default function Terminal() {
             return true;
         }
       });
-  
     }, TERMINAL_INIT_DELAY);
-  
+
     return () => {
       clearTimeout(timeout);
       if (xtermRef.current) xtermRef.current.dispose();
       xtermRef.current = null;
     };
-  }, [TERMINAL_CONFIG]);  
+  }, []); 
+  // Using onData/attachCustomKeyEventHandler matches xterm’s API surface and keeps typing strict [web:7][web:19].
 
-  // Handle WebSocket messages
-  const handleWebSocketMessage = useCallback((data: any, terminal: XTerm) => {
-    switch (data.type) {
+  // Typed WebSocket message handler (no any)
+  const handleWebSocketMessage = useCallback((msg: ServerMsg, terminal: XTerm) => {
+    switch (msg.type) {
       case 'output':
-        terminal.write(data.data);
+        terminal.write(msg.data);
         break;
       case 'error':
-        terminal.write(`\x1b[1;31m${data.data}\x1b[0m`);
+        terminal.write(`\x1b[1;31m${msg.data}\x1b[0m`);
         break;
       case 'exit':
-        terminal.write(`\r\n\x1b[1;33m${data.data}\x1b[0m\r\n`);
+        terminal.write(`\r\n\x1b[1;33m${msg.data}\x1b[0m\r\n`);
         break;
     }
-  }, []);
+  }, []); 
+  // Discriminated unions make the switch exhaustive and satisfy no-explicit-any [web:2][web:23].
 
   // Connect WebSocket
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN || !isTerminalReady) return;
 
-    const websocket = new WebSocket('wss://minishell-website.onrender.com'); // ← Update this URL
+    const websocket = new WebSocket('wss://minishell-website.onrender.com'); // update if needed
 
     websocket.onopen = () => {
       setIsConnected(true);
@@ -121,11 +159,17 @@ export default function Terminal() {
       const terminal = xtermRef.current;
       if (!terminal) return;
       try {
-        handleWebSocketMessage(JSON.parse(event.data), terminal);
+        const parsed: unknown = JSON.parse(event.data);
+        if (isServerMsg(parsed)) {
+          handleWebSocketMessage(parsed, terminal);
+        } else {
+          console.warn('Unexpected WS message shape', parsed);
+        }
       } catch (err) {
         console.error('Error parsing WS message:', err);
       }
     };
+    // Parse to unknown, validate with type guard before handling to avoid unsafe any from JSON.parse [web:12][web:29].
 
     websocket.onclose = (event) => {
       setIsConnected(false);
@@ -148,7 +192,8 @@ export default function Terminal() {
     };
 
     wsRef.current = websocket;
-  }, [reconnectAttempts, isTerminalReady, handleWebSocketMessage]);
+  }, [reconnectAttempts, isTerminalReady, handleWebSocketMessage]); 
+  // Keeping the connection workflow unchanged, only types hardened for messages [web:22].
 
   useEffect(() => {
     if (isTerminalReady) connectWebSocket();
@@ -157,7 +202,8 @@ export default function Terminal() {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [isTerminalReady, connectWebSocket]);
+  }, [isTerminalReady, connectWebSocket]); 
+  // Standard lifecycle cleanup remains intact [web:22].
 
   // Resize terminal on window resize
   useEffect(() => {
@@ -171,9 +217,9 @@ export default function Terminal() {
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, []); 
+  // Using FitAddon.fit with terminal.cols/rows is consistent with xterm addon usage patterns [web:7][web:19].
 
-  // Retry connection
   const handleRetryConnection = () => {
     setConnectionError('');
     setReconnectAttempts(0);
@@ -187,9 +233,7 @@ export default function Terminal() {
         {/* Header */}
         <div className="bg-gradient-to-r from-[#0f0f70] via-[#131380] to-[#0f0f70] px-6 py-4 border-b border-blue-500/50 flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <div className={`w-3 h-3 rounded-full shadow-lg ${
-              isConnected ? 'bg-green-400' : isReconnecting ? 'bg-yellow-400' : 'bg-red-400'
-            }`}></div>
+            <div className={`w-3 h-3 rounded-full shadow-lg ${isConnected ? 'bg-green-400' : isReconnecting ? 'bg-yellow-400' : 'bg-red-400'}`}></div>
             <span className="text-white font-mono text-sm font-bold">minishell</span>
           </div>
         </div>
@@ -212,7 +256,7 @@ export default function Terminal() {
               </div>
               <h3 className="text-xl font-bold text-white mb-2">Connection Lost</h3>
               <p className="text-blue-200 mb-2">{connectionError}</p>
-              <button 
+              <button
                 onClick={handleRetryConnection}
                 className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 rounded-lg text-white font-semibold shadow-lg transition-all duration-200 transform hover:scale-105 active:scale-95"
               >
