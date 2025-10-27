@@ -1,22 +1,23 @@
-# Use Node.js official image
+# Use a Linux Node image
 FROM node:22-bullseye
 
 # Set working directory
 WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json
-COPY package*.json ./
-
-# Install dependencies
+# Copy package files and install dependencies
+COPY backend/package*.json ./
 RUN npm install
 RUN npm rebuild node-pty
 
-# Copy backend code
-COPY . .
+# Copy backend code including your Linux minishell
+COPY backend ./
 
-# Expose port (Render will provide PORT)
+# Make sure minishell is executable
+RUN chmod +x minishell
+
+# Set Render port and expose
 ENV PORT 10000
 EXPOSE 10000
 
-# Start the backend server
+# Start server
 CMD ["node", "server.js"]
