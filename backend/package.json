@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "postinstall": "npm rebuild node-pty || true"
+    "postinstall": "npm rebuild node-pty --build-from-source"
   },
   "dependencies": {
     "node-pty": "^1.0.0",
