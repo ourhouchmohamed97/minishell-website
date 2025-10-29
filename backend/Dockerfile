@@ -1,22 +1,41 @@
-# Use a Linux Node image with a newer GLIBC
-FROM node:22-bullseye
+FROM ubuntu:20.04
+
+# Set non-interactive frontend to avoid timezone prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies for both minishell and Node.js
+RUN apt-get update && apt-get install -y \
+    nodejs \
+    npm \
+    gcc \
+    make \
+    libreadline-dev \
+    python3 \
+    python3-pip \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 18+ (Ubuntu 20.04 has old Node.js by default)
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
 
 # Set working directory
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# Copy package files and install dependencies
+# Copy package files first for better caching
 COPY package*.json ./
-RUN npm install
-RUN npm rebuild node-pty
 
-# Copy all backend code (including Linux minishell binary)
+# Install Node.js dependencies
+RUN npm install
+
+# Copy all source code (including minishell source)
 COPY . .
 
-# Make sure minishell is executable
-RUN chmod +x minishell
+# Build minishell
+RUN make
 
-# Set Render port and expose
-ENV PORT 10000
+# Expose port (Render will use PORT environment variable)
 EXPOSE 10000
 
 # Start server
