@@ -5,12 +5,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "build": "make || echo 'No makefile, skipping build'",
-    "postinstall": "npm rebuild node-pty --build-from-source && npm run build"
+    "dev": "node server.js"
   },
   "dependencies": {
+    "express": "^5.1.0",
     "node-pty": "^1.0.0",
     "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
