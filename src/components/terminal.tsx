@@ -11,6 +11,12 @@ const RECONNECT_DELAY = 2000;
 const TERMINAL_INIT_DELAY = 100;
 const RESIZE_DEBOUNCE_DELAY = 300;
 
+// Define WebSocket message types
+interface WebSocketMessage {
+  type: 'output' | 'error' | 'exit';
+  data: string;
+}
+
 export default function Terminal() {
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string>('');
@@ -25,44 +31,44 @@ export default function Terminal() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const resizeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Extract terminal configuration
-  const TERMINAL_CONFIG = {
-    cursorBlink: true,
-    theme: {
-      background: '#0f172a',
-      foreground: '#e2e8f0',
-      cursor: '#e2e8f0',
-      cursorAccent: '#0f172a',
-      selectionBackground: '#1e293b',
-      black: '#000000',
-      red: '#ef4444',
-      green: '#10b981',
-      yellow: '#f59e0b',
-      blue: '#3b82f6',
-      magenta: '#ec4899',
-      cyan: '#06b6d4',
-      white: '#e2e8f0',
-      brightBlack: '#475569',
-      brightRed: '#f87171',
-      brightGreen: '#34d399',
-      brightYellow: '#fbbf24',
-      brightBlue: '#60a5fa',
-      brightMagenta: '#f472b6',
-      brightCyan: '#22d3ee',
-      brightWhite: '#f1f5f9'
-    },
-    fontSize: 15,
-    fontFamily: '"Fira Code", "Cascadia Code", monospace',
-    fontWeight: '400' as const,
-    lineHeight: 1.2,
-    scrollback: 10000,
-    allowTransparency: false,
-  };
-
   // Initialize terminal
   useEffect(() => {
+    // Move TERMINAL_CONFIG inside useEffect to avoid re-render issues
+    const TERMINAL_CONFIG = {
+      cursorBlink: true,
+      theme: {
+        background: '#0f172a',
+        foreground: '#e2e8f0',
+        cursor: '#e2e8f0',
+        cursorAccent: '#0f172a',
+        selectionBackground: '#1e293b',
+        black: '#000000',
+        red: '#ef4444',
+        green: '#10b981',
+        yellow: '#f59e0b',
+        blue: '#3b82f6',
+        magenta: '#ec4899',
+        cyan: '#06b6d4',
+        white: '#e2e8f0',
+        brightBlack: '#475569',
+        brightRed: '#f87171',
+        brightGreen: '#34d399',
+        brightYellow: '#fbbf24',
+        brightBlue: '#60a5fa',
+        brightMagenta: '#f472b6',
+        brightCyan: '#22d3ee',
+        brightWhite: '#f1f5f9'
+      },
+      fontSize: 15,
+      fontFamily: '"Fira Code", "Cascadia Code", monospace',
+      fontWeight: '400' as const,
+      lineHeight: 1.2,
+      scrollback: 10000,
+      allowTransparency: false,
+    };
+  
     if (typeof window === 'undefined' || !terminalRef.current || xtermRef.current) return;
-
+  
     const timeout = setTimeout(() => {
       try {
         const terminal = new XTerm(TERMINAL_CONFIG);
@@ -76,13 +82,13 @@ export default function Terminal() {
             try {
               fitAddon.fit();
               setIsTerminalReady(true);
-            } catch (error) {
+            } catch (error: unknown) {
               console.error('Error fitting terminal:', error);
               setTimeout(() => {
                 try {
                   fitAddon.fit();
                   setIsTerminalReady(true);
-                } catch (retryError) {
+                } catch (retryError: unknown) {
                   console.error('Retry fitting failed:', retryError);
                   setIsTerminalReady(true);
                 }
@@ -90,22 +96,22 @@ export default function Terminal() {
             }
           }, 150);
         }
-
+  
         xtermRef.current = terminal;
         fitAddonRef.current = fitAddon;
-
+  
         // Handle terminal input
-        terminal.onData((data) => {
+        terminal.onData((data: string) => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'input', data }));
           }
         });
-
+  
         // Handle special keys
-        terminal.attachCustomKeyEventHandler((event) => {
+        terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
           if (event.type !== 'keydown' || !event.ctrlKey) return true;
           if (wsRef.current?.readyState !== WebSocket.OPEN) return true;
-
+  
           switch (event.code) {
             case 'KeyC':
               wsRef.current.send(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
@@ -120,18 +126,18 @@ export default function Terminal() {
               return true;
           }
         });
-
-      } catch (error) {
+  
+      } catch (error: unknown) {
         console.error('Error initializing terminal:', error);
       }
     }, TERMINAL_INIT_DELAY);
-
+  
     return () => {
       clearTimeout(timeout);
       if (xtermRef.current) {
         try {
           xtermRef.current.dispose();
-        } catch (error) {
+        } catch (error: unknown) {
           console.error('Error disposing terminal:', error);
         }
         xtermRef.current = null;
@@ -139,8 +145,8 @@ export default function Terminal() {
     };
   }, []);
 
-  // Parse WebSocket message
-  const handleWebSocketMessage = useCallback((data: any, terminal: XTerm) => {
+  // Parse WebSocket message - FIXED: Remove 'any' type
+  const handleWebSocketMessage = useCallback((data: WebSocketMessage, terminal: XTerm) => {
     switch (data.type) {
       case 'output':
         terminal.write(data.data);
@@ -172,7 +178,9 @@ export default function Terminal() {
     websocket.onmessage = (event) => {
       if (!terminal) return;
       try {
-        handleWebSocketMessage(JSON.parse(event.data), terminal);
+        // FIXED: Parse with proper type
+        const message: WebSocketMessage = JSON.parse(event.data);
+        handleWebSocketMessage(message, terminal);
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
       }
